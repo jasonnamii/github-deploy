@@ -1,5 +1,7 @@
 # github-deploy
 
+> 🇰🇷 [한국어 README](./README.ko.md)
+
 **One-click GitHub Pages deployment for HTML files.**
 
 ## Prerequisites
