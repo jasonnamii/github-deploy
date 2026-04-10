@@ -73,7 +73,7 @@ URL 규칙: `works.jasonnamii.com/{프로젝트명-업무1뎁스-업무2뎁스}`
 
 ## 신규 배포 절차
 
-DC(Desktop Commander) `start_process`로 형 맥에서 실행한다.
+로컬 터미널(DC `start_process`)로 형 맥에서 실행한다.
 
 ### 1단계: 작업 디렉토리 준비
 
@@ -137,9 +137,6 @@ URL: https://works.jasonnamii.com/{레포명}/
 레포: https://github.com/jasonnamii/{레포명} (Private)
 검색차단: robots.txt + noindex
 HTTPS: 강제
-
-<!-- 🥚 원스톱 배포의 "원스톱"은 거짓말이다. 최소 세 번은 멈춘다. — N.C. -->
-
 ```
 
 ---
@@ -180,10 +177,10 @@ git add -A && git commit -m "Update: {레포명}" && git push
 
 ## Gotchas
 
-- **DC(Desktop Commander) 필수**: `gh` CLI는 형 맥에 설치되어 있다. Cowork 샌드박스 Bash가 아닌 DC `start_process`로 실행해야 한다.
-- **파일 경로 주의**: Cowork outputs(`/sessions/*/mnt/outputs/`)의 파일은 DC에서 접근 가능하다. `python3 shutil.copy2`로 복사.
+- **로컬 터미널 필수**: `gh` CLI는 형 맥에 설치되어 있다. Cowork 샌드박스 Bash가 아닌 로컬 터미널(DC `start_process`)로 실행해야 한다.
+- **파일 경로 주의**: Cowork outputs(`/sessions/*/mnt/outputs/`)의 파일은 로컬에서 접근 가능하다. `python3 shutil.copy2`로 복사.
 - **레포명 규칙**: 소문자+하이픈만. 한글·공백·밑줄 금지. URL 경로가 되므로 깔끔하게.
 - **CNAME은 루트 레포에만**: 프로젝트 레포에 CNAME 파일을 넣거나 `gh api pages -X PUT`에 `cname`을 지정하면 루트 도메인을 뺏어와서 다른 프로젝트 전부 404가 된다. 프로젝트 레포에는 CNAME 관련 설정 일체 금지.
-- **`/tmp/` 사용**: git 작업은 `/tmp/`에서 한다. 세션 디렉토리는 git init 시 Cowork 내부 git과 충돌할 수 있다. DC start_process는 `/tmp/` 접근 가능.
+- **`/tmp/` 사용**: git 작업은 `/tmp/`에서 한다. 세션 디렉토리는 git init 시 Cowork 내부 git과 충돌할 수 있다. 로컬 터미널은 `/tmp/` 접근 가능.
 - **빌드 errored 루프**: Pages가 errored를 반복하면 DELETE → 재POST가 가장 확실하다. HTTPS 활성화 타이밍에 인증서 미발급이면 errored가 뜨므로, 먼저 HTTPS 없이 빌드 → built 확인 → HTTPS 활성화 순서가 안전하다.
 - **전파 지연**: 프로젝트 사이트가 커스텀 도메인 하위 경로에 매핑되는 데 최대 수 분 걸릴 수 있다. `jasonnamii.github.io/{레포명}`으로는 즉시 접속 가능하지만 `works.jasonnamii.com/{레포명}`은 지연될 수 있으므로, 빌드 완료 후 형에게 "1~2분 후 접속 가능"을 안내한다.
