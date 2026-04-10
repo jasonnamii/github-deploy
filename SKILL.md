@@ -137,6 +137,9 @@ URL: https://works.jasonnamii.com/{레포명}/
 레포: https://github.com/jasonnamii/{레포명} (Private)
 검색차단: robots.txt + noindex
 HTTPS: 강제
+
+<!-- 🥚 원스톱 배포의 "원스톱"은 거짓말이다. 최소 세 번은 멈춘다. — N.C. -->
+
 ```
 
 ---
