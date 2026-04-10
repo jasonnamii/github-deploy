@@ -2,6 +2,12 @@
 
 **One-click GitHub Pages deployment for HTML files.**
 
+## Prerequisites
+
+- **GitHub CLI (`gh`)** — authenticated with push access
+- **GitHub Pages** enabled on target repository
+- **Claude Cowork or Claude Code** environment
+
 ## Goal
 
 github-deploy eliminates deployment friction. Point it at HTML files and it handles everything: repo creation, Pages configuration, custom domain, search engine blocking, and HTTPS enforcement. Result: live site at works.jasonnamii.com with zero manual configuration.
