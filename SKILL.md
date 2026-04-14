@@ -140,11 +140,14 @@ EOF
 
 ### 5단계: 빌드 대기 + 자동 복구
 
+**적응형 폴링:** 초회 10초 → 2회 20초 → 3회 40초 → 4회 60초 (최대 4회, 총 대기 ~130초). max_wait = 180초. 초과 시 '빌드 지연' 보고 + 수동 확인 안내. 고정 5회×20초 → 적응형으로 교체.
+
 ```bash
-# 빌드 완료까지 폴링 (최대 5회, 20초 간격 = 최대 100초)
+# 빌드 완료까지 폴링 (적응형 간격)
 BUILD_OK=false
-for i in 1 2 3 4 5; do
-  sleep 20
+INTERVALS=(10 20 40 60)  # 초회 10초, 이후 20초, 40초, 60초
+for i in "${!INTERVALS[@]}"; do
+  sleep "${INTERVALS[$i]}"
   STATUS=$(gh api repos/jasonnamii/{레포명}/pages -q '.status')
   if [ "$STATUS" = "built" ]; then
     BUILD_OK=true
