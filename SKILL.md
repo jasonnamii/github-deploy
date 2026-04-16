@@ -1,232 +1,124 @@
 ---
 name: github-deploy
 description: |
-  GitHub Pages 자동 배포. HTML→works.jasonnamii.com에 Private+검색차단+HTTPS 원스톱 배포·업데이트.
-  P1: 빌드, build, 배포, deploy, 깃허브배포, 퍼블리싱, 웹배포.
-  P2: 빌드해, 빌드해줘, 배포해줘, deploy this.
-  P3: github pages, web deploy, publish.
-  P5: works.jasonnamii.com으로.
-  NOT: 레포관리(→직접), 도메인(→직접), DNS(→직접).
+  GitHub Pages 자동 배포. HTML→works.jasonnamii.com에 Private+검색차단+HTTPS 원스톱. 신규·업데이트·에러복구 자동 분기. scripts/ 기반 결정적 실행.
+  P1: 빌드, build, 배포, deploy, 깃허브배포, 퍼블리싱, 웹배포, gh deploy, 깃배포.
+  P2: 빌드해, 빌드해줘, 배포해줘, deploy this, 올려줘.
+  P3: github pages, web deploy, publish, deployment.
+  P5: works.jasonnamii.com으로, 웹으로.
+  NOT: 레포관리(→직접), 도메인(→직접), DNS(→직접), 옵시디언(→obsidian-markdown).
 ---
-
-<!-- Trigger Conditions
-P1: 빌드, build, 배포, deploy, 깃허브배포, 퍼블리싱, 웹배포.
-P2: 빌드해, 빌드해줘, 배포해줘, deploy this.
-P3: github pages, web deploy, publish.
-P5: works.jasonnamii.com으로, 웹으로.
-NOT: 깃허브 레포 관리(→직접수행), 도메인 구매(→직접수행), DNS 설정(→직접수행), 옵시디언 문서(→obsidian-markdown).
--->
 
 # GitHub Deploy
 
-HTML 파일을 `works.jasonnamii.com/{레포명}`에 배포한다. Private 레포 + 검색 차단 + HTTPS 강제.
+**깃허브배포·퍼블리싱·웹배포·깃배포** 범용 엔진. HTML → `works.jasonnamii.com/{레포명}` Private + noindex + HTTPS.
+
+**실행 환경:** 모든 bash는 **DC `start_process`** (로컬 터미널). Cowork 샌드박스엔 `gh auth` 없음.
+
+**원칙:** SKILL.md는 분기·규칙만. 실행은 전부 `scripts/*.sh` 호출. LLM이 bash 생성 금지.
 
 ---
 
 ## 하드코딩 설정
 
-| 항목 | 값 | 변경 불가 |
-|------|-----|----------|
-| GitHub 계정 | `jasonnamii` | ✓ |
-| 커스텀 도메인 | `works.jasonnamii.com` | ✓ |
-| 루트 레포 | `works.jasonnamii.com` (CNAME 소유, 이미 존재) | ✓ |
-| 레포 공개범위 | **Private** | ✓ |
-| 검색 차단 | robots.txt `Disallow: /` + `<meta name="robots" content="noindex, nofollow">` | ✓ |
-| HTTPS | 강제 (`https_enforced: true`) | ✓ |
-| 실행 환경 | **DC `start_process`** (로컬 터미널). Cowork 샌드박스에 `gh auth` 없어서 실패 | ✓ |
+| 항목 | 값 |
+|------|-----|
+| GitHub 계정 | `jasonnamii` |
+| 커스텀 도메인 | `works.jasonnamii.com` (루트 레포 CNAME 소유, 이미 존재) |
+| 공개범위 | **Private** |
+| 검색 차단 | `robots.txt` + `<meta noindex>` |
+| HTTPS | 강제 |
+| 작업 디렉토리 | `/tmp/gh-deploy/{레포명}` |
 
-**{레포명}** ≡ GitHub 리포지토리명 ≡ URL 경로 ≡ 로컬 작업 디렉토리명. 규칙: 소문자+하이픈만. 예: `kisas-tf-agenda`
+**{레포명}** ≡ 레포명 ≡ URL 경로 ≡ 작업 디렉토리. 규칙: 소문자+하이픈. 예: `kisas-tf-agenda`
 
-## 도메인 구조 (필수 이해)
-
-```
-works.jasonnamii.com          ← 루트 레포 (CNAME 소유, 빈 페이지, 이미 존재)
-├── /kisas-tf-agenda/         ← 프로젝트 레포 A (CNAME 없음)
-├── /다른프로젝트/              ← 프로젝트 레포 B (CNAME 없음)
-└── ...
-```
-
-**핵심: CNAME은 루트 레포(`works.jasonnamii.com`)에만 있다. 프로젝트 레포에 CNAME을 넣으면 도메인 충돌이 발생하므로 절대 금지.**
+**도메인 구조 (절대 금지):** CNAME은 루트 레포에만. 프로젝트 레포에 CNAME·`cname` 지정 시 루트 도메인 탈취 → 다른 프로젝트 전부 404.
 
 ---
 
-## 배포 경로 판별
-
-| 조건 | 경로 |
-|------|------|
-| 레포가 GitHub에 없음 | **신규 배포** (전 절차) |
-| 레포 존재 + Pages 활성 | **업데이트** (push만) |
-| 레포 존재 + Pages 미활성 | **Pages 활성화 후 업데이트** (4단계부터 합류) |
-
-판별:
-```bash
-# 1차: 레포 존재 확인
-gh api repos/jasonnamii/{레포명} 2>/dev/null
-# 404 → 신규 배포
-
-# 2차: Pages 상태 확인 (레포 존재 시)
-gh api repos/jasonnamii/{레포명}/pages 2>/dev/null
-# 404 → Pages 미활성 → 4단계(Pages 활성화)부터 실행 후 업데이트
-# 200 → 업데이트
-```
-
----
-
-## 실행 전 확인 (필수)
-
-형에게 반드시 확인하는 2가지:
+## 실행 전 확인 (필수 2가지)
 
 | 항목 | 질문 | 미지정 시 |
 |------|------|----------|
-| 대상 파일 | "어떤 파일을 배포할까요?" | 직전 작업 HTML 사용 |
-| 레포명(=URL 경로) | "URL 경로를 어떻게 할까요? (예: `kisas-tf-agenda`)" | 파일명 기반 자동 제안 |
-
-URL 규칙: `works.jasonnamii.com/{프로젝트명-업무1뎁스-업무2뎁스}`
+| 대상 파일 | "어떤 파일을 배포할까요?" | 직전 작업 HTML |
+| 레포명 | "URL 경로는? (예: `kisas-tf-agenda`)" | 파일명 기반 자동 제안 |
 
 ---
 
-## 신규 배포 절차
+## 실행 (단일 파이프라인)
 
-> **모든 bash 명령은 DC `start_process`로 실행한다.** (하드코딩 설정 §실행 환경 참조)
+> 모든 스크립트는 DC `start_process`로 실행.
 
-### 1단계: 작업 디렉토리 준비
-
-```bash
-cd /tmp && rm -rf {레포명} && mkdir {레포명} && cd {레포명} && git init
-```
-
-### 2단계: 파일 배치
-
-대상 HTML을 `index.html`로 복사. **noindex 메타태그가 없으면 삽입.**
+### Step 1: 상태 판별 (1회, <2초)
 
 ```bash
-# HTML 복사 (단일 파일)
-python3 -c "import shutil; shutil.copy2('{원본경로}', '/tmp/{레포명}/index.html')"
-
-# 멀티파일(CSS/JS/이미지 포함 폴더)인 경우:
-# python3 -c "import shutil; shutil.copytree('{원본폴더}', '/tmp/{레포명}', dirs_exist_ok=True)"
-
-# noindex 메타태그 확인 + 삽입 (python3로 통일 — BSD/GNU sed 호환 문제 회피)
-python3 -c "
-p = '/tmp/{레포명}/index.html'
-t = open(p).read()
-if 'noindex' not in t:
-    t = t.replace('<head>', '<head>\n<meta name=\"robots\" content=\"noindex, nofollow\">', 1)
-    open(p, 'w').write(t)
-"
+bash scripts/resolve-state.sh {레포명}
+# 출력: NEW | UPDATE | PAGES_OFF | ERRORED
 ```
 
-robots.txt 생성 (**CNAME은 넣지 않는다** — 루트 레포가 소유):
+| 출력 | 의미 | 다음 |
+|------|------|------|
+| `NEW` | 레포 없음 | Step 2 (mode=new) |
+| `UPDATE` | 레포 + Pages built | Step 2 (mode=update) → Step 3 스킵 가능 (빌드 대기만) |
+| `PAGES_OFF` | 레포 있음 + Pages 미활성 | Step 2 (mode=update) + 수동 Pages 활성화 |
+| `ERRORED` | Pages 빌드 에러 상태 | Step 3 바로 (재생성 시도) |
+
+### Step 2: 배포 실행
 
 ```bash
-echo -e "User-agent: *\nDisallow: /" > robots.txt
+bash scripts/deploy.sh {레포명} {원본경로} {new|update}
 ```
 
-### 3단계: 레포 생성 + push
+진행상황 에코:
+```
+▶ [0s] [1/5] 작업 디렉토리 준비
+✓ [1s] [1/5] 디렉토리 준비 완료
+▶ [1s] [2/5] 파일 배치
+...
+DONE
+```
+
+**원본경로:** 단일 `.html` 또는 폴더 모두 지원. 폴더면 `index.html` 루트 존재 필수.
+
+### Step 3: 빌드 대기 (투명 폴링)
 
 ```bash
-git add -A
-git commit -m "Deploy: {레포명}"
-gh repo create {레포명} --private --source=. --push
+bash scripts/wait-build.sh {레포명} 180
 ```
 
-### 4단계: Pages 활성화
+매회 `⏳ [경과s/180s] status=building` 에코. 에러 시 재생성 1회 자동(카운터 리셋).
 
-```bash
-gh api repos/jasonnamii/{레포명}/pages -X POST --input - <<'EOF'
-{"build_type":"legacy","source":{"branch":"main","path":"/"}}
-EOF
-```
+**exit code:**
+- `0` → built (성공)
+- `1` → timeout (수동 확인 안내)
+- `2` → errored 반복 (Pro 플랜 확인 또는 HTTPS 타이밍)
 
-### 5단계: 빌드 대기 + 자동 복구
-
-**적응형 폴링:** 초회 10초 → 2회 20초 → 3회 40초 → 4회 60초 (최대 4회, 총 대기 ~130초). max_wait = 180초. 초과 시 '빌드 지연' 보고 + 수동 확인 안내. 고정 5회×20초 → 적응형으로 교체.
-
-```bash
-# 빌드 완료까지 폴링 (적응형 간격)
-BUILD_OK=false
-INTERVALS=(10 20 40 60)  # 초회 10초, 이후 20초, 40초, 60초
-for i in "${!INTERVALS[@]}"; do
-  sleep "${INTERVALS[$i]}"
-  STATUS=$(gh api repos/jasonnamii/{레포명}/pages -q '.status')
-  if [ "$STATUS" = "built" ]; then
-    BUILD_OK=true
-    break
-  elif [ "$STATUS" = "errored" ]; then
-    echo "⚠️ Pages errored — DELETE → 재생성 시도"
-    gh api repos/jasonnamii/{레포명}/pages -X DELETE
-    sleep 5
-    gh api repos/jasonnamii/{레포명}/pages -X POST --input - <<'RETRY'
-{"build_type":"legacy","source":{"branch":"main","path":"/"}}
-RETRY
-    # 재생성 후 폴링 계속
-  fi
-done
-
-if [ "$BUILD_OK" = false ]; then
-  echo "❌ 빌드 미완료 (status: $STATUS). 형에게 수동 확인 요청."
-fi
-```
-
-**주의: 프로젝트 레포에는 CNAME을 설정하지 않는다.** HTTPS는 루트 레포의 인증서가 자동 적용된다.
-
-### 6단계: 결과 보고
+### Step 4: 결과 보고
 
 ```
 ✅ 배포 완료
-URL: https://works.jasonnamii.com/{레포명}/ (1~2분 후 접속 가능, github.io는 즉시)
+URL: https://works.jasonnamii.com/{레포명}/  (1~2분 후)
+즉시: https://jasonnamii.github.io/{레포명}/
 레포: https://github.com/jasonnamii/{레포명} (Private)
-검색차단: robots.txt + noindex
-HTTPS: 강제
 ```
-
----
-
-## 업데이트 절차
-
-기존 레포에 파일만 갱신한다.
-
-```bash
-cd /tmp && rm -rf {레포명}
-gh repo clone jasonnamii/{레포명} /tmp/{레포명}
-cd /tmp/{레포명}
-
-# 파일 교체 (단일 파일)
-python3 -c "import shutil; shutil.copy2('{원본경로}', '/tmp/{레포명}/index.html')"
-
-# 멀티파일인 경우:
-# python3 -c "import shutil; shutil.copytree('{원본폴더}', '/tmp/{레포명}', dirs_exist_ok=True)"
-
-# noindex 확인 + 삽입 (python3 통일)
-python3 -c "
-p = '/tmp/{레포명}/index.html'
-t = open(p).read()
-if 'noindex' not in t:
-    t = t.replace('<head>', '<head>\n<meta name=\"robots\" content=\"noindex, nofollow\">', 1)
-    open(p, 'w').write(t)
-"
-
-git add -A && git commit -m "Update: {레포명}" && git push
-```
-
-빌드 완료 확인(5단계 폴링 로직 동일 적용) 후 URL 보고.
 
 ---
 
 ## 에러 대응
 
-| 에러 | 원인 | 대응 |
+| exit | 원인 | 대응 |
 |------|------|------|
-| `gh: Not Found (404)` on pages | Private 레포 + Free 플랜 | 형에게 Pro 플랜 필요 안내 |
-| Pages `errored` 반복 | 빌드 타이밍 / HTTPS 인증서 미발급 | Pages 삭제 → 재생성 (`DELETE` → `POST`). HTTPS 타이밍이면: HTTPS 비활성 → 빌드 → built 확인 → HTTPS 재활성화 |
-| push rejected | remote 선행 커밋 | `git pull --rebase` 후 재push |
+| `wait-build` =2 | Private + Free 플랜 / HTTPS 타이밍 | Pro 플랜 확인. HTTPS 비활성→built→재활성화 (수동) |
+| `deploy` push rejected | remote 선행 커밋 | `cd /tmp/gh-deploy/{레포명} && git pull --rebase && git push` |
+| `resolve-state` 반복 실패 | `gh auth` 미로그인 | `gh auth status` 형에게 확인 요청 |
 
 ---
 
 ## Gotchas
 
-- **파일 경로 주의**: Cowork outputs(`/sessions/*/mnt/outputs/`)의 파일은 로컬에서 접근 가능하다. `python3 shutil.copy2`로 복사.
-- **CNAME은 루트 레포에만**: 프로젝트 레포에 CNAME 파일을 넣거나 `gh api pages -X PUT`에 `cname`을 지정하면 루트 도메인을 뺏어와서 다른 프로젝트 전부 404가 된다. 프로젝트 레포에는 CNAME 관련 설정 일체 금지.
-- **`/tmp/` 사용**: git 작업은 `/tmp/`에서 한다. 세션 디렉토리는 git init 시 Cowork 내부 git과 충돌할 수 있다.
-- **전파 지연**: `works.jasonnamii.com/{레포명}`은 빌드 후 최대 수 분 걸릴 수 있다. `jasonnamii.github.io/{레포명}`은 즉시 접속 가능. 빌드 완료 후 형에게 "1~2분 후 접속 가능" 안내.
-- **멀티파일 배포**: CSS/JS/이미지가 분리된 프로젝트는 `shutil.copytree`로 폴더째 복사. `index.html`이 루트에 있는지 반드시 확인. 없으면 형에게 진입점 파일 확인 후 rename.
+- **CNAME 절대 금지**: 프로젝트 레포엔 CNAME 파일·`cname` 필드 일체 금지. 루트 레포가 소유.
+- **작업 경로**: `/tmp/gh-deploy/{레포명}` 고정. Cowork 세션 내 git init은 상위 git과 충돌 위험.
+- **멀티파일**: 폴더 배포 시 `index.html` 루트 필수. 없으면 진입점 rename 필요 안내.
+- **전파 지연**: 커스텀 도메인은 빌드 후 1~2분. `github.io` 직링크는 즉시.
+- **스크립트 수정 금지**: SKILL.md는 호출만. 로직 변경은 `scripts/*.sh`에서. LLM이 매번 bash 생성 = 오타·누락 재발.
+- **`gh auth`는 로컬에만**: DC `start_process`(로컬 터미널)에서만 동작. Cowork 샌드박스 Bash ✗.
