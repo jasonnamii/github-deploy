@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
-# deploy.sh — 신규/업데이트 통합 배포 (도메인별 분기)
-# usage: bash deploy.sh {repo} {src_path} {mode: new|update} {domain: jasonnamii|choi|pdkim}
+# deploy.sh — 신규/업데이트/서브디렉토리 통합 배포 (도메인별 분기)
+# usage: bash deploy.sh {repo} {src_path} {mode: new|update|subdir} {domain: jasonnamii|choi|pdkim}
 #   src_path: 단일 html 또는 폴더
+#   mode:
+#     - new|update: jasonnamii 전용 (레포 생성·갱신 분기)
+#     - subdir:     choi/pdkim 전용 — SUBDIR_MODE=1 자동. new/update 무관.
 #   domain:
 #     - jasonnamii: 개별 프로젝트 레포 (jasonnamii/{repo}) — User Site 구조
 #     - choi:       루트 레포 서브폴더 (jasonnamii/works-choi/{repo}/)
 #     - pdkim:      루트 레포 서브폴더 (jasonnamii/works-pdkim/{repo}/)
+# 주의: choi/pdkim은 mode 값 무시 — SUBDIR_MODE=1 자동 진입. mode=subdir 권장.
 set -eu
 
 REPO="${1:?repo required}"
