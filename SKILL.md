@@ -1,12 +1,12 @@
 ---
 name: github-deploy
 description: |
-  GitHub Pages 자동 배포. HTML→works.jasonnamii.com/pdkim.com/choi.build 3도메인 라우팅. Private+검색차단+HTTPS 원스톱. choi/pdkim은 루트 레포 서브폴더 자동 배포.
-  P1: 빌드, build, 배포, deploy, 깃배포, 제이슨나미, 피디님, 김형석, pdkim, 내꺼, 형꺼, 최남희, 최, choi.
-  P2: 배포해줘, 올려줘, deploy this, 피디님으로 배포, 최로 배포, 내꺼로 배포.
-  P3: github pages, web deploy, multi-domain routing, subfolder deploy.
-  P5: works.jasonnamii.com으로, works.pdkim.com으로, works.choi.build으로.
-  NOT: 레포관리(→직접), DNS(→직접), 옵시디언(→obsidian-markdown).
+  GitHub Pages 자동 배포. HTML→works.jasonnamii.com/pdkim.com/choi.build 3도메인. Private+noindex+HTTPS. 단일 HTML 입력 시 images·css·js 동반 자원 자동 복사 + 배포 후 HEAD 검증 내장.
+    P1: 빌드, build, 배포, deploy, 깃배포, 제이슨나미, 피디님, 김형석, pdkim, 내꺼, 형꺼, 최남희, 최, choi.
+    P2: 배포해줘, 올려줘, deploy this, 피디님으로 배포, 최로 배포, 내꺼로 배포.
+    P3: github pages, web deploy, multi-domain, auto asset bundling.
+    P5: works.jasonnamii.com으로, works.pdkim.com으로, works.choi.build으로.
+    NOT: 레포관리(→직접), DNS(→직접), 옵시디언(→obsidian-markdown).
 ---
 
 # GitHub Deploy
@@ -16,6 +16,8 @@ description: |
 **실행 환경:** 모든 bash는 **DC `start_process`** (로컬 터미널). Cowork 샌드박스엔 `gh auth` 없음.
 
 **원칙:** SKILL.md는 분기·규칙만. 실행은 전부 `scripts/*.sh` 호출. LLM이 bash 생성 금지.
+
+**v1.1 보강 (2026-04-23):** 단일 HTML 입력 시 `<img src>·<link href>·<script src>` 등 상대경로 참조를 자동 스캔해 실존 자원을 동반 복사. 배포 후 `curl HEAD`로 전량 200 확인. "이미지 깨짐" 재발 방지.
 
 ---
 
@@ -28,6 +30,32 @@ description: |
 | 제이슨나미·제이슨·jasonnamii·(기본값) | `jasonnamii` | §일반 플로우 (Step 1~5) |
 
 **판별:** 최근 발화 트리거 스캔 → 첫 매칭. 복수/미매칭 시 1회 확인. 기본값 = `jasonnamii`.
+
+---
+
+## 📦 Auto-Asset + Verify (v1.1 내장 — 공통)
+
+deploy.sh가 모든 경로(subdir·new·update)에서 자동으로 수행:
+
+1. **입력 판정**
+   - **폴더 입력** → 통째로 복사 (기존 동작)
+   - **단일 HTML 입력** → 아래 auto-asset 스캔
+
+2. **auto-asset 스캔** (단일 HTML만)
+   - 대상 속성: `src=`, `href=`, `srcset=`, `poster=`, `data-src=`
+   - 제외: 외부 URL(`http://`, `https://`, `//`), `data:`, `mailto:`, `javascript:`, `#` 앵커
+   - 쿼리·해시 제거 후 경로만 사용
+   - 원본 HTML과 **같은 디렉토리** 기준 상대경로 실존 체크
+   - 실존하는 파일·폴더만 스테이지에 동일 상대경로로 복사
+   - src_dir 밖으로 벗어나는 `../` 참조는 보안상 무시
+   - 누락 파일은 로그만 남기고 배포는 계속
+
+3. **HEAD 검증** (배포 후 자동)
+   - 전파 대기 45초 후 `curl -I {BASE_URL}/{경로}` 전량 체크
+   - 200이 아니면 경고 + 수동 재확인 URL 출력
+   - `SKIP_VERIFY=1 bash scripts/deploy.sh ...` 로 끌 수 있음
+
+**v1 범위 외 (추후 확장):** CSS 내부 `url(...)`, inline `<style>` 참조, JS 동적 로딩.
 
 ---
 
@@ -45,8 +73,10 @@ bash scripts/deploy.sh {레포명} {원본경로} subdir {choi|pdkim}
 ```
 
 - mode는 **항상 `subdir`** 고정. new/update 판단 ✗.
+- 원본경로는 **단일 HTML이어도 OK** — auto-asset이 같은 폴더의 `images/` 등 자동 탐지.
+- 폴더 배포 원하면 폴더 경로 전달 (index.html 루트 필수).
 - Step 3(wait-build)·Step 5(Pages 활성화) **전부 스킵**. 루트 레포 Pages 이미 활성.
-- 완료 즉시 §결과보고 choi/pdkim 예시로 출력.
+- HEAD 검증은 내장 — 완료 시 `✅ 완벽 배포` 또는 `⚠ N건 실패` 자동 출력.
 
 **판정 순서:**
 1. domain 트리거 매칭 → `choi` or `pdkim`이면 → **즉시 이 섹션으로 점프, 아래 §일반 플로우 읽지 말 것**
@@ -88,7 +118,7 @@ bash scripts/resolve-state.sh {레포명} jasonnamii
 bash scripts/deploy.sh {레포명} {원본경로} {new|update} jasonnamii
 ```
 
-진행상황 에코 `▶ [0s] [1/5] ...` → `DONE`. 원본경로: 단일 `.html` 또는 폴더(index.html 루트 필수).
+진행상황 에코 `▶ [0s] [1/6] ...` → HEAD 검증 → `DONE`. 원본경로: 단일 `.html` (auto-asset 동반) 또는 폴더(index.html 루트 필수).
 
 ### Step 3: 빌드 대기 (기본 스킵)
 
@@ -124,7 +154,7 @@ GitHub Pages는 **계정당 User Site 1개**만 가능. `jasonnamii`가 User Sit
 
 **jasonnamii:**
 ```
-✅ 배포 요청 완료 (빌드 백그라운드 진행)
+✅ 배포 완료 (빌드 백그라운드 진행)
 메인: https://works.jasonnamii.com/{레포명}/   (~1-2분 후)
 대체: https://jasonnamii.github.io/{레포명}/  (~30초 후)
 레포: https://github.com/jasonnamii/{레포명} (Private)
@@ -135,18 +165,21 @@ GitHub Pages는 **계정당 User Site 1개**만 가능. `jasonnamii`가 User Sit
 ✅ 배포 완료 (루트 레포 서브폴더)
 메인: https://works.{choi.build|pdkim.com}/{레포명}/   (~1-2분 후)
 레포: https://github.com/jasonnamii/works-{choi|pdkim}/tree/main/{레포명} (Private)
+검증: [verify] 완벽 배포: N/N 리소스 200 OK
 ```
 
 ---
 
 ## ⚠️ 에러 대응
 
-| exit | 원인 | 대응 |
+| exit / 증상 | 원인 | 대응 |
 |------|------|------|
 | `deploy` =3 | 루트 레포 clone 실패 | `gh repo view jasonnamii/works-{choi\|pdkim}` 확인 |
 | `wait-build` =2 | Private+Free / HTTPS 타이밍 | Pro 확인. HTTPS 비활성→built→재활성 |
 | push rejected | remote 선행 커밋 | 스크립트 자동 `git pull --rebase` 재시도 |
 | `resolve-state` 반복실패 | `gh auth` 미로그인 | `gh auth status` 형에게 확인 요청 |
+| `[verify]` 실패 N건 | 전파 지연 or 진짜 누락 | 1~2분 뒤 BASE_URL 수동 체크. 계속 404면 원본 HTML의 참조 경로가 실제 파일과 불일치 |
+| `[auto-asset] MISSING` | HTML 참조는 있는데 파일 없음 | 원본 폴더에 파일 누락. HTML 수정 or 파일 추가 후 재배포 |
 
 ---
 
@@ -156,8 +189,11 @@ GitHub Pages는 **계정당 User Site 1개**만 가능. `jasonnamii`가 User Sit
 - **Project Site vs User Site**: `jasonnamii.github.io`만 User Site. 다른 레포 콘텐츠를 `works.choi.build/{다른레포}/`에 넣는 건 **절대 불가** → 서브폴더 강제.
 - **CNAME 금지 (서브폴더)**: choi/pdkim 서브폴더엔 CNAME 일체 금지.
 - **작업 경로**: `/tmp/gh-deploy/{레포|루트레포}` 고정. Cowork 세션 내 git init은 상위 git 충돌 위험.
-- **멀티파일**: 폴더 배포 시 `index.html` 루트 필수.
-- **전파 지연**: 커스텀 도메인 1~2분. `github.io` 직링크 즉시.
+- **단일 HTML 입력 OK**: v1.1부터 같은 폴더 자원 자동 동반. 형이 수동으로 index.html 리네임·images 복사 안 해도 됨.
+- **폴더 배포 시 `index.html` 루트 필수** — 폴더 입력은 통째로 복사되므로 루트에 index.html 없으면 Pages 404.
+- **auto-asset 한계**: CSS 내부 `url(...)`, 동적 JS 로드, 절대경로(`/images/`가 src_dir 밖 가리킬 때)는 미지원. 이런 케이스는 폴더 입력 권장.
+- **전파 지연**: HEAD 검증 전 45초 대기. 그래도 404면 추가 1~2분 기다려 재확인. `github.io` 직링크는 즉시.
 - **스크립트 수정 금지**: SKILL.md는 호출만. 로직은 `scripts/*.sh`.
 - **`gh auth`는 로컬만**: DC `start_process`에서만 동작. Cowork Bash ✗.
 - **루트 레포 사전 존재**: `works-choi`, `works-pdkim`은 생성·Pages 활성 완료 전제.
+- **HEAD 검증 끄기**: 빠른 배포 필요 시 `SKIP_VERIFY=1 bash scripts/deploy.sh ...`
