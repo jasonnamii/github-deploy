@@ -1,24 +1,56 @@
 #!/usr/bin/env bash
-# deploy.sh — choi 단일 도메인 배포 (v2.0)
-# usage: bash deploy.sh {repo} {src_path}
-#   src_path: 단일 html 또는 폴더
-#   배포처: jasonnamii/works-choi/{repo}/ → https://works.choi.build/{repo}/
+# deploy.sh — choi 디폴트 + pdkim 명시 모드 (v2.1)
+# usage:
+#   bash deploy.sh {repo} {src_path}                    # choi 디폴트
+#   bash deploy.sh {repo} {src_path} --mode=pdkim       # pdkim 명시
+#   bash deploy.sh {repo} {src_path} --mode=choi        # 명시도 가능
+#
+# src_path: 단일 html 또는 폴더
+# 배포처:
+#   choi  → jasonnamii/works-choi/{repo}/  → https://works.choi.build/{repo}/
+#   pdkim → jasonnamii/works-pdkim/{repo}/ → https://works.pdkim.com/{repo}/
 #
 # [v1.1] 단일 HTML 입력 시 같은 폴더 상대경로 자원 자동 동반.
 # [v2.0] domain 파라미터 제거. choi 고정. OWNER=jasonnamii 유지.
+# [v2.1] --mode={choi|pdkim} 인자 부활. 미지정 시 choi 디폴트.
 set -eu
 
 REPO="${1:?repo required}"
 SRC="${2:?src path required}"
+MODE_ARG="${3:-}"
+
+# --mode 파싱 (디폴트=choi)
+MODE="choi"
+case "$MODE_ARG" in
+  --mode=choi|mode=choi|choi)   MODE="choi" ;;
+  --mode=pdkim|mode=pdkim|pdkim) MODE="pdkim" ;;
+  "") MODE="choi" ;;
+  *)
+    echo "✗ 알 수 없는 mode: $MODE_ARG (choi|pdkim 중 하나)" >&2
+    exit 2
+    ;;
+esac
+
 OWNER="jasonnamii"
-ROOT_REPO="works-choi"
+case "$MODE" in
+  choi)
+    ROOT_REPO="works-choi"
+    BASE_URL="https://works.choi.build/${REPO}"
+    ;;
+  pdkim)
+    ROOT_REPO="works-pdkim"
+    BASE_URL="https://works.pdkim.com/${REPO}"
+    ;;
+esac
+
 WORK="/tmp/gh-deploy/${ROOT_REPO}"
-BASE_URL="https://works.choi.build/${REPO}"
 T0=$(date +%s)
 
 say() { echo "▶ [$(($(date +%s)-T0))s] $*"; }
 ok()  { echo "✓ [$(($(date +%s)-T0))s] $*"; }
 warn(){ echo "⚠ [$(($(date +%s)-T0))s] $*"; }
+
+say "[mode] ${MODE} → ${OWNER}/${ROOT_REPO}/${REPO}/"
 
 # ---------------------------------------------------------------
 # stage_source: 단일 HTML → 동반 자원 자동 복사 (auto-asset)
@@ -169,7 +201,7 @@ verify_deploy() {
 }
 
 # ===============================================================
-# 본류: choi 루트 레포 서브폴더 배포
+# 본류: 루트 레포 서브폴더 배포 (choi 또는 pdkim)
 # ===============================================================
 say "[1/4] 루트 레포 준비 (${OWNER}/${ROOT_REPO})"
 rm -rf "$WORK" && mkdir -p "$(dirname "$WORK")"
@@ -210,4 +242,4 @@ if [ "${SKIP_VERIFY:-0}" != "1" ]; then
   verify_deploy "$BASE_URL" "${PATHS[@]}"
 fi
 
-echo "DONE"
+echo "DONE (mode=${MODE} → ${BASE_URL}/)"
