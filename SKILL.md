@@ -19,6 +19,14 @@ description: |
 
 **v2.2 (2026-05-02) — DC 자동실행 전면화:** v2.1의 "샌드박스 직접 push 불가·형이 수동 실행" 정책 폐기. DC start_process는 형 맥북 zsh를 그대로 띄우므로 `gh auth`·SSH·토큰 전부 동작. Claude가 deploy.sh를 **무조건 자동 호출**. 1줄 명령 출력 안내 전면 삭제.
 
+**v2.3 (2026-05-06) — Phase 0 라우팅 게이트 + 병목 4건 제거:**
+1. **Phase 0 신설** — deploy.sh 진입 즉시 `.deploy-cache.json` + `gh api contents` + `curl HEAD` 3중 조회 → `DEPLOY_KIND=redeploy|new` 자동 분기. "기배포 발견 → 재배포" / "신규 → 새 서브폴더" 1줄 보고.
+2. **mapfile 제거** → `grep -c .` 카운트 단순화. macOS bash 3.2 한계 우회.
+3. **검증 단순화** — 파일별 HEAD 루프(N건) → 루트 URL 1회 HEAD. `sleep 60s` 고정. 재시도 루프 ✗.
+4. **`.deploy-cache.json`** — `~/github-repos/skill-repos/github-deploy/.cache/deploy-cache.json`. key=`{mode}:{repo}`. 매 배포 자동 갱신.
+
+→ 결과: 배포 1회 = DC start_process 1콜 = push + 60s + 단일 검증 + 캐시 갱신. 검증 루프·진단 루프·재호출 전부 제거.
+
 **계정·레포 구조 (고정):**
 - OWNER = `jasonnamii`
 - choi 배포처 (디폴트) = `jasonnamii/works-choi` 루트 레포의 `/{레포명}/`
@@ -74,13 +82,17 @@ mcp__Desktop_Commander__start_process(
 - 빌드 대기·Pages 활성화 **전부 스킵**. 두 루트 레포 모두 Pages 이미 활성.
 - HEAD 검증 내장 — `✅ 완벽 배포` / `⚠ N건 실패` 자동 출력.
 - **출력 끊김 시:** `mcp__Desktop_Commander__read_process_output(pid, timeout_ms=60000)`로 추가 수신.
-- **HEAD 검증 폴백:** deploy.sh의 mapfile 에러로 검증부 누락 시 별도 `curl -sI` 1콜로 직접 200 확인.
+- **HEAD 검증 폴백 (v2.2 이하):** mapfile 에러로 검증 누락 시 별도 `curl -sI` 1콜로 직접 200 확인. v2.3부터는 자동 처리되므로 폴백 불필요.
 
 ---
 
-## 🪛 Step 0: 재배포 감지 (옵션)
+## 🪛 Step 0: 재배포 감지 (v2.3부터 deploy.sh 내장)
 
-**트리거:** "재배포·업뎃·redeploy" 키워드 + 레포명만 있고 파일 경로 불명.
+**v2.3:** deploy.sh 진입 시 Phase 0 라우팅 게이트가 자동으로 `.deploy-cache.json` + `gh api contents` + `curl HEAD` 3중 조회 → "기배포 발견 → 재배포" / "신규배포" 1줄 보고. **별도 check-deploy.sh 호출 불필요.**
+
+**check-deploy.sh는 다음 경우에만 별도 호출:** 형이 "지금까지 배포한 레포 다 보여줘" 같은 *리스트* 요청을 할 때만.
+
+**트리거 (레거시):** "재배포·업뎃·redeploy" 키워드 + 레포명만 있고 파일 경로 불명.
 
 **Claude DC 자동 호출:**
 
@@ -170,12 +182,24 @@ mcp__Desktop_Commander__start_process(
 
 ## 📋 결과보고 (Claude 출력 템플릿)
 
-**신규 배포 (choi):**
+**신규 배포 (choi, v2.3 Phase 0 보고 포함):**
 ```
-✅ 배포 완료 (choi 루트 레포 서브폴더 · DC 자동실행)
-메인: https://works.choi.build/{레포명}/   (~1-2분 후)
+✅ 배포 완료 (choi · 신규배포 · DC 자동실행)
+[phase 0] 기배포 없음 → 신규배포 모드
+메인: https://works.choi.build/{레포명}/   (~60초 후 200)
+레포: https://github.com/jasonnamii/works-choi/tree/main/{레포명} (Private)
+검증: HTTP 200 OK (sleep 60s 후 단일 HEAD)
+캐시: .deploy-cache.json 신규 등록 (choi:{레포명})
+```
+
+**재배포 (choi, v2.3 Phase 0 분기):**
+```
+✅ 재배포 완료 (choi · DC 자동실행)
+[phase 0] 기배포 발견 (cache|tree|head|tree+head) → 재배포 모드
+메인: https://works.choi.build/{레포명}/
 레포: https://github.com/jasonnamii/works-choi/tree/main/{레포명} (Private)
 검증: HTTP 200 OK
+캐시: .deploy-cache.json 갱신
 ```
 
 **신규 배포 (pdkim 명시):**
@@ -206,7 +230,8 @@ mcp__Desktop_Commander__start_process(
 | `[verify]` 실패 N건 | 전파 지연 or 진짜 누락 | 1~2분 뒤 BASE_URL 자동 재체크. 계속 404면 원본 HTML 참조 경로 불일치 보고 |
 | `[auto-asset] MISSING` | HTML 참조는 있는데 파일 없음 | 누락 파일 보고. 형 결정(수정 or 추가) 후 재배포 |
 | `migrate-legacy.sh` scan 결과 없음 | 레거시 레포 서브폴더 구조 아님 | 레포 구조 자동 점검 후 보고. 수동 이관 필요 시 형에게 알림 |
-| **mapfile: command not found** (deploy.sh 검증부) | macOS bash 3.2 한계 | push 자체는 성공. Claude가 별도 `curl -sI` DC 호출로 직접 200 확인 |
+| **mapfile: command not found** (v2.2 이하 잔재) | macOS bash 3.2 한계 — v2.3에서 mapfile 제거됨 | v2.3 이상이면 발생 안 함. 발생 시 deploy.sh 버전 확인 |
+| **Phase 0 캐시 충돌** | `.deploy-cache.json` 파손 | `rm ~/github-repos/skill-repos/github-deploy/.cache/deploy-cache.json` 후 재배포 (캐시 자동 재생성) |
 | **mode 인자 누락** | choi/pdkim 분기 모호 | 디폴트=choi 적용. pdkim 원하면 `--mode=pdkim` 명시 |
 
 ---
@@ -232,8 +257,10 @@ v2.0부터 신규 배포 **차단**. 리다이렉트 전용.
 - **DC = 형 맥북 zsh** — DC start_process는 형 로컬 셸을 그대로 띄움 → `gh auth`·SSH 키·토큰·홈 경로 전부 사용 가능. "샌드박스 토큰 없음" 전제는 v2.1의 오해, v2.2부터 폐기.
 - **스크립트 표준 경로** — `~/github-repos/skill-repos/github-deploy/scripts/deploy.sh`. `~/.claude/skills/github-deploy/scripts/`는 미설치 → fallback 금지. 경로 의심 시 DC `find ~ -maxdepth 6 -type f -name "deploy.sh" -path "*github-deploy*"` 1콜로 확인.
 - **DC bash 호출 형식** — `command='bash -lc "..."'` 권장 (zsh login 환경 강제로 PATH·gh auth 안정). timeout_ms는 deploy=180000, check=30000, migrate=120000 디폴트.
-- **mapfile 에러 = push 성공 신호** — deploy.sh 검증부의 `mapfile`은 macOS bash 3.2에 없음. push는 이미 끝난 상태이므로 Claude가 별도 `curl -sI {URL}` DC 호출로 200 직접 확인하면 끝. 재배포 ✗.
-- **HEAD 검증 캐시** — Pages 전파 30~90초. 첫 curl 404여도 1분 더 기다려 재시도. 그래도 404면 폴더 구조·파일명 한글 인코딩 확인.
+- **v2.3 검증 = sleep 60s + 루트 HEAD 1회** — 파일별 검증 루프는 폐기. deploy.sh가 단일 HTML을 `index.html`로 리네임하므로 루트 URL 200이면 곧 페이지 OK. 재시도·진단 루프 사라짐.
+- **Phase 0 자동 분기** — deploy.sh 진입 시 캐시·gh api·curl HEAD 3중 조회로 `redeploy|new` 자동 판정. 별도 check-deploy.sh 호출 ✗.
+- **`.deploy-cache.json` 위치** — `~/github-repos/skill-repos/github-deploy/.cache/deploy-cache.json`. 파손 시 삭제 후 재배포로 자동 재생성.
+- **HEAD 검증 캐시** — Pages 전파 평균 50초. v2.3은 60s 고정. 그래도 404면 폴더 구조·파일명 한글 인코딩 확인.
 - **디폴트 = choi**, **명시 = pdkim** — "pdkim·김피디·pdkim으로" 키워드 없으면 무조건 choi. 도메인 핑퐁 ✗.
 - **OWNER = jasonnamii** — 두 모드 모두 GitHub 계정은 `jasonnamii`. 착각 금지.
 - **레거시는 리다이렉트만** — `jasonnamii.github.io`(works.jasonnamii.com) 신규 배포 요청 = 거부 + choi/pdkim 권유.

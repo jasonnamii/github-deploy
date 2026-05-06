@@ -1,18 +1,21 @@
 #!/usr/bin/env bash
-# deploy.sh — choi 디폴트 + pdkim 명시 모드 (v2.1)
+# deploy.sh — choi 디폴트 + pdkim 명시 모드 (v2.3)
 # usage:
 #   bash deploy.sh {repo} {src_path}                    # choi 디폴트
 #   bash deploy.sh {repo} {src_path} --mode=pdkim       # pdkim 명시
 #   bash deploy.sh {repo} {src_path} --mode=choi        # 명시도 가능
 #
+# v2.3 변경점:
+#   1. Phase 0 라우팅 게이트: .deploy-cache.json + git ls-tree + curl HEAD
+#      → 기배포 자동 탐지, 신규/재배포 분기 보고
+#   2. mapfile 제거 → while read (macOS bash 3.2 호환)
+#   3. 검증 로직 단순화 → 리네임 후 루트 URL 1회 HEAD (sleep 60s 고정)
+#   4. .deploy-cache.json 자동 갱신 (재배포시 라우팅 0초)
+#
 # src_path: 단일 html 또는 폴더
 # 배포처:
 #   choi  → jasonnamii/works-choi/{repo}/  → https://works.choi.build/{repo}/
 #   pdkim → jasonnamii/works-pdkim/{repo}/ → https://works.pdkim.com/{repo}/
-#
-# [v1.1] 단일 HTML 입력 시 같은 폴더 상대경로 자원 자동 동반.
-# [v2.0] domain 파라미터 제거. choi 고정. OWNER=jasonnamii 유지.
-# [v2.1] --mode={choi|pdkim} 인자 부활. 미지정 시 choi 디폴트.
 set -eu
 
 REPO="${1:?repo required}"
@@ -44,18 +47,112 @@ case "$MODE" in
 esac
 
 WORK="/tmp/gh-deploy/${ROOT_REPO}"
+CACHE_DIR="${HOME}/github-repos/skill-repos/github-deploy/.cache"
+CACHE_FILE="${CACHE_DIR}/deploy-cache.json"
 T0=$(date +%s)
 
 say() { echo "▶ [$(($(date +%s)-T0))s] $*"; }
 ok()  { echo "✓ [$(($(date +%s)-T0))s] $*"; }
 warn(){ echo "⚠ [$(($(date +%s)-T0))s] $*"; }
 
+
+# ===============================================================
+# Phase 0: 라우팅 게이트 (재배포 vs 신규배포 자동 분기)
+#   1. 캐시 우선 조회 (.deploy-cache.json)
+#   2. git ls-tree (레포 내부 폴더 존재 확인)
+#   3. curl HEAD (외부 200/404 검증)
+#   4. 결과 보고 → DEPLOY_KIND=redeploy | new
+# ===============================================================
+DEPLOY_KIND="new"
+DEPLOY_SOURCE="-"
+
+route_phase0() {
+  local cache_hit="" tree_hit="" head_hit=""
+
+  # 0-1: 캐시 조회 (없으면 패스, 있으면 우선)
+  if [ -f "$CACHE_FILE" ]; then
+    cache_hit=$(python3 - "$CACHE_FILE" "$REPO" "$MODE" <<'PY' 2>/dev/null || true
+import json, sys
+try:
+    cache = json.load(open(sys.argv[1]))
+    key = f"{sys.argv[3]}:{sys.argv[2]}"
+    if key in cache:
+        print(cache[key].get("url", ""))
+except Exception:
+    pass
+PY
+)
+  fi
+
+  # 0-2: git ls-tree (레포 내부 폴더 확인)
+  tree_hit=$(gh api "repos/${OWNER}/${ROOT_REPO}/contents/${REPO}" >/dev/null 2>&1 && echo "Y" || echo "")
+
+  # 0-3: curl HEAD (외부 검증, 5초 타임아웃)
+  local code
+  code=$(curl -g -s -o /dev/null -w "%{http_code}" --max-time 5 "${BASE_URL}/" 2>/dev/null || echo "000")
+  if [ "$code" = "200" ]; then
+    head_hit="Y"
+  fi
+
+  # 0-4: 분기 결정
+  if [ -n "$cache_hit" ]; then
+    DEPLOY_KIND="redeploy"
+    DEPLOY_SOURCE="cache"
+  elif [ -n "$tree_hit" ] || [ -n "$head_hit" ]; then
+    DEPLOY_KIND="redeploy"
+    if [ -n "$tree_hit" ] && [ -n "$head_hit" ]; then
+      DEPLOY_SOURCE="tree+head"
+    elif [ -n "$tree_hit" ]; then
+      DEPLOY_SOURCE="tree"
+    else
+      DEPLOY_SOURCE="head"
+    fi
+  else
+    DEPLOY_KIND="new"
+    DEPLOY_SOURCE="-"
+  fi
+
+  # 0-5: 보고
+  if [ "$DEPLOY_KIND" = "redeploy" ]; then
+    say "[phase 0] 기배포 발견 (${DEPLOY_SOURCE}) → 재배포 모드 → ${BASE_URL}/"
+  else
+    say "[phase 0] 기배포 없음 → 신규배포 모드 → ${BASE_URL}/ 생성"
+  fi
+}
+
+# 캐시 갱신 함수 (Phase 1 끝나고 호출)
+update_cache() {
+  mkdir -p "$CACHE_DIR"
+  python3 - "$CACHE_FILE" "$REPO" "$MODE" "$BASE_URL" "$DEPLOY_KIND" <<'PY' 2>/dev/null || true
+import json, os, sys
+from datetime import datetime, timezone
+path, repo, mode, url, kind = sys.argv[1:6]
+cache = {}
+if os.path.exists(path):
+    try:
+        cache = json.load(open(path))
+    except Exception:
+        cache = {}
+key = f"{mode}:{repo}"
+cache[key] = {
+    "slug": repo,
+    "mode": mode,
+    "url": f"{url}/",
+    "last_kind": kind,
+    "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+}
+json.dump(cache, open(path, "w"), indent=2, ensure_ascii=False)
+PY
+}
+
 say "[mode] ${MODE} → ${OWNER}/${ROOT_REPO}/${REPO}/"
+route_phase0
+
 
 # ---------------------------------------------------------------
 # stage_source: 단일 HTML → 동반 자원 자동 복사 (auto-asset)
 # 폴더 입력이면 통째로 복사. 단일 HTML이면 참조 스캔 + 실존 파일 동반 복사.
-# stdout: 복사된 자산 상대경로 목록 (HEAD 검증용)
+# stdout: 복사된 자산 상대경로 목록 (참고용)
 # ---------------------------------------------------------------
 stage_source() {
   local src="$1" dst="$2"
@@ -174,34 +271,29 @@ PY
 }
 
 # ---------------------------------------------------------------
-# verify_deploy: 배포 후 HEAD 검증 (루프 하드캡 1회)
+# verify_root: 루트 URL HEAD 1회 검증 (sleep 60s 고정)
+#   v2.3 단순화: 파일별 검증 → 루트 URL만 (deploy.sh가 index.html로
+#   리네임하므로 루트가 곧 페이지). 재시도 루프 제거.
 # ---------------------------------------------------------------
-verify_deploy() {
-  local base="$1"; shift
-  local -a paths=("$@")
-  local fail=0 ok_count=0
-  say "[verify] HEAD 체크 시작 (전파 대기 45s)"
-  sleep 45
-  for p in "${paths[@]}"; do
-    local code
-    code=$(curl -g -s -o /dev/null -w "%{http_code}" "${base}/${p}" || echo "000")
-    if [ "$code" = "200" ]; then
-      ok_count=$((ok_count+1))
-    else
-      warn "  404/오류: ${p} → ${code}"
-      fail=$((fail+1))
-    fi
-  done
-  if [ "$fail" = "0" ]; then
-    ok "[verify] 완벽 배포: ${ok_count}/${#paths[@]} 리소스 200 OK"
+verify_root() {
+  local base="$1"
+  say "[verify] Pages 전파 대기 60s 후 루트 HEAD 검증"
+  sleep 60
+  local code
+  code=$(curl -g -sI -o /dev/null -w "%{http_code}" --max-time 10 "${base}/" 2>/dev/null || echo "000")
+  if [ "$code" = "200" ]; then
+    ok "[verify] HTTP 200 OK → ${base}/"
+    return 0
   else
-    warn "[verify] ${fail}건 실패 / 총 ${#paths[@]}건 — GitHub Pages 전파 지연이거나 파일 누락"
-    warn "[verify] 1~2분 후 수동 재확인 권장: ${base}/"
+    warn "[verify] HTTP ${code} → ${base}/ (전파 더 필요할 수 있음)"
+    warn "[verify] 1~2분 후 직접 재확인 권장"
+    return 1
   fi
 }
 
+
 # ===============================================================
-# 본류: 루트 레포 서브폴더 배포 (choi 또는 pdkim)
+# Phase 1: 본류 (루트 레포 서브폴더 배포)
 # ===============================================================
 say "[1/4] 루트 레포 준비 (${OWNER}/${ROOT_REPO})"
 rm -rf "$WORK" && mkdir -p "$(dirname "$WORK")"
@@ -216,7 +308,8 @@ TARGET="${WORK}/${REPO}"
 say "[2/4] 서브폴더 배치 ($SRC → ${REPO}/) + 동반 자원 자동 탐지"
 rm -rf "$TARGET"
 ASSET_LIST=$(stage_source "$SRC" "$TARGET")
-ok "[2/4] 파일 배치 완료 ($(echo "$ASSET_LIST" | wc -l | tr -d ' ')개 파일)"
+ASSET_COUNT=$(echo "$ASSET_LIST" | grep -c . || echo "0")
+ok "[2/4] 파일 배치 완료 (${ASSET_COUNT}개 파일)"
 
 say "[3/4] noindex 메타태그 주입"
 inject_noindex "$TARGET"
@@ -227,19 +320,28 @@ say "[4/4] git 커밋 + push"
 git add -A >/dev/null
 if git diff --cached --quiet; then
   ok "[4/4] 변경사항 없음 — push 생략"
+  PUSHED=0
 else
   git -c user.email="deploy@local" -c user.name="deploy" \
-      commit -q -m "Deploy ${REPO} → ${ROOT_REPO}/ ($(date +%Y-%m-%d))" || true
+      commit -q -m "Deploy ${REPO} → ${ROOT_REPO}/ (${DEPLOY_KIND}, $(date +%Y-%m-%d))" || true
   git push -q || {
     warn "push 충돌 — rebase 후 재시도"
     git pull --rebase -q && git push -q
   }
   ok "[4/4] push 완료"
+  PUSHED=1
 fi
 
-if [ "${SKIP_VERIFY:-0}" != "1" ]; then
-  mapfile -t PATHS <<<"$ASSET_LIST"
-  verify_deploy "$BASE_URL" "${PATHS[@]}"
+# ===============================================================
+# Phase 2: 검증 + 캐시 갱신
+# ===============================================================
+if [ "${SKIP_VERIFY:-0}" != "1" ] && [ "$PUSHED" = "1" ]; then
+  verify_root "$BASE_URL" || true
+elif [ "$PUSHED" = "0" ]; then
+  say "[verify] 변경 없음 → 검증 생략"
 fi
 
-echo "DONE (mode=${MODE} → ${BASE_URL}/)"
+update_cache
+ok "[cache] .deploy-cache.json 갱신 완료 (${MODE}:${REPO})"
+
+echo "DONE (kind=${DEPLOY_KIND}, mode=${MODE} → ${BASE_URL}/)"
