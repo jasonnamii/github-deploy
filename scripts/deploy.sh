@@ -5,9 +5,15 @@
 #   bash deploy.sh {repo} {src_path} --mode=pdkim       # pdkim 명시
 #   bash deploy.sh {repo} {src_path} --mode=choi        # 명시도 가능
 #
+# v2.4 변경점 (2026-05-09 — F1·F2·F3 병목 제거):
+#   1. F1 sha256 비교: Phase 0에서 입력 파일 sha256 vs 캐시 last_sha256 비교
+#      → 동일 콘텐츠면 1초 이내 "최신본 동일" 1줄 종료 (재배포 콜 폭증 차단)
+#   2. F2 .deploy-status.txt: 매 phase 종료 시 STATUS/COMMIT/TIME/URL/HTTP_CODE 박제
+#      → timeout 시 Claude가 cat 1콜로 즉시 결과 파악 (재시도 루프 차단)
+#   3. F3 stdout flush: say/ok/warn에 sync 추가 → MCP stream timeout 회피
+#
 # v2.3 변경점:
 #   1. Phase 0 라우팅 게이트: .deploy-cache.json + git ls-tree + curl HEAD
-#      → 기배포 자동 탐지, 신규/재배포 분기 보고
 #   2. mapfile 제거 → while read (macOS bash 3.2 호환)
 #   3. 검증 로직 단순화 → 리네임 후 루트 URL 1회 HEAD (sleep 60s 고정)
 #   4. .deploy-cache.json 자동 갱신 (재배포시 라우팅 0초)
@@ -49,11 +55,43 @@ esac
 WORK="/tmp/gh-deploy/${ROOT_REPO}"
 CACHE_DIR="${HOME}/github-repos/skill-repos/github-deploy/.cache"
 CACHE_FILE="${CACHE_DIR}/deploy-cache.json"
+STATUS_FILE="${CACHE_DIR}/deploy-status.txt"
 T0=$(date +%s)
 
-say() { echo "▶ [$(($(date +%s)-T0))s] $*"; }
-ok()  { echo "✓ [$(($(date +%s)-T0))s] $*"; }
-warn(){ echo "⚠ [$(($(date +%s)-T0))s] $*"; }
+# F3: stdout flush 강제 — MCP stream timeout 회피
+say() { echo "▶ [$(($(date +%s)-T0))s] $*"; sync 2>/dev/null || true; }
+ok()  { echo "✓ [$(($(date +%s)-T0))s] $*"; sync 2>/dev/null || true; }
+warn(){ echo "⚠ [$(($(date +%s)-T0))s] $*"; sync 2>/dev/null || true; }
+
+# F2: 매 phase 종료 시 status 박제 — timeout 시 Claude가 cat 1콜로 결과 파악
+write_status() {
+  local status="$1" phase="${2:-}" commit="${3:-}" code="${4:-}"
+  mkdir -p "$CACHE_DIR"
+  cat > "$STATUS_FILE" <<EOF
+STATUS=${status}
+PHASE=${phase}
+MODE=${MODE}
+REPO=${REPO}
+URL=${BASE_URL}/
+COMMIT=${commit}
+HTTP_CODE=${code}
+DEPLOY_KIND=${DEPLOY_KIND:-pending}
+TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+PID=$$
+EOF
+}
+
+# F1: 입력 파일 sha256 (단일 HTML 또는 폴더 전체)
+compute_input_sha() {
+  local src="$1"
+  if [ -d "$src" ]; then
+    find "$src" -type f -exec shasum -a 256 {} \; 2>/dev/null | sort | shasum -a 256 | awk '{print $1}'
+  elif [ -f "$src" ]; then
+    shasum -a 256 "$src" | awk '{print $1}'
+  else
+    echo ""
+  fi
+}
 
 
 # ===============================================================
@@ -115,18 +153,43 @@ PY
   # 0-5: 보고
   if [ "$DEPLOY_KIND" = "redeploy" ]; then
     say "[phase 0] 기배포 발견 (${DEPLOY_SOURCE}) → 재배포 모드 → ${BASE_URL}/"
+
+    # 0-6: F1 sha256 short-circuit — 동일 콘텐츠면 1초 종료
+    if [ -n "$cache_hit" ] && [ -f "$CACHE_FILE" ]; then
+      local cached_sha new_sha
+      cached_sha=$(python3 - "$CACHE_FILE" "$REPO" "$MODE" <<'PY' 2>/dev/null || true
+import json, sys
+try:
+    cache = json.load(open(sys.argv[1]))
+    key = f"{sys.argv[3]}:{sys.argv[2]}"
+    print(cache.get(key, {}).get("last_sha256", ""))
+except Exception:
+    pass
+PY
+)
+      new_sha=$(compute_input_sha "$SRC")
+      if [ -n "$cached_sha" ] && [ -n "$new_sha" ] && [ "$cached_sha" = "$new_sha" ]; then
+        ok "[phase 0] 입력 sha256 동일 → 이미 최신본 배포됨. 재push 생략"
+        write_status "skip-same-sha" "phase0" "" "200"
+        echo "DONE-SKIP (sha256 match, mode=${MODE} → ${BASE_URL}/)"
+        exit 0
+      fi
+    fi
   else
     say "[phase 0] 기배포 없음 → 신규배포 모드 → ${BASE_URL}/ 생성"
   fi
+  write_status "phase0-done" "phase0"
 }
 
 # 캐시 갱신 함수 (Phase 1 끝나고 호출)
 update_cache() {
   mkdir -p "$CACHE_DIR"
-  python3 - "$CACHE_FILE" "$REPO" "$MODE" "$BASE_URL" "$DEPLOY_KIND" <<'PY' 2>/dev/null || true
+  local input_sha
+  input_sha=$(compute_input_sha "$SRC")
+  python3 - "$CACHE_FILE" "$REPO" "$MODE" "$BASE_URL" "$DEPLOY_KIND" "$input_sha" <<'PY' 2>/dev/null || true
 import json, os, sys
 from datetime import datetime, timezone
-path, repo, mode, url, kind = sys.argv[1:6]
+path, repo, mode, url, kind, sha = sys.argv[1:7]
 cache = {}
 if os.path.exists(path):
     try:
@@ -139,6 +202,7 @@ cache[key] = {
     "mode": mode,
     "url": f"{url}/",
     "last_kind": kind,
+    "last_sha256": sha,
     "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
 }
 json.dump(cache, open(path, "w"), indent=2, ensure_ascii=False)
@@ -329,6 +393,8 @@ else
     git pull --rebase -q && git push -q
   }
   ok "[4/4] push 완료"
+  LAST_COMMIT=$(git log -1 --format='%h' 2>/dev/null || echo "")
+  write_status "phase4-pushed" "phase4" "$LAST_COMMIT"
   PUSHED=1
 fi
 
@@ -343,5 +409,9 @@ fi
 
 update_cache
 ok "[cache] .deploy-cache.json 갱신 완료 (${MODE}:${REPO})"
+
+# F2: 최종 status 박제
+LAST_COMMIT=$(cd "$WORK" && git log -1 --format='%h' 2>/dev/null || echo "")
+write_status "success" "done" "$LAST_COMMIT" "200"
 
 echo "DONE (kind=${DEPLOY_KIND}, mode=${MODE} → ${BASE_URL}/)"

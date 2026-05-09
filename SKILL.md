@@ -19,13 +19,19 @@ description: |
 
 **v2.2 (2026-05-02) — DC 자동실행 전면화:** v2.1의 "샌드박스 직접 push 불가·형이 수동 실행" 정책 폐기. DC start_process는 형 맥북 zsh를 그대로 띄우므로 `gh auth`·SSH·토큰 전부 동작. Claude가 deploy.sh를 **무조건 자동 호출**. 1줄 명령 출력 안내 전면 삭제.
 
+**v2.4 (2026-05-09) — F1·F2·F3·F4 병목 제거 (timeout 회피·sha256 short-circuit):**
+1. **F1 sha256 short-circuit** — Phase 0에서 입력 파일 sha256 vs 캐시 `last_sha256` 비교. 동일 콘텐츠면 1초 이내 `DONE-SKIP` 1줄 종료. **재배포 콜 폭증 차단.**
+2. **F2 `.deploy-status.txt`** — 매 phase 종료 시 `STATUS / PHASE / MODE / REPO / URL / COMMIT / HTTP_CODE / TIME / PID` 9필드 박제. 위치: `~/github-repos/skill-repos/github-deploy/.cache/deploy-status.txt`. **timeout 시 Claude가 cat 1콜로 즉시 결과 파악.**
+3. **F3 stdout flush** — `say/ok/warn`에 `sync` 추가. MCP stream timeout 회피.
+4. **F4 timeout ≠ 실패 가이드** — Gotchas + WRONG/CORRECT 1쌍 신설. timeout 시 즉시 재시도 ✗ → ① `cat .deploy-status.txt` ② `git log -1` ③ `curl HEAD` 3단계 검증 후 재시도 판단.
+
+→ 결과: 동일 파일 재배포 = **5콜+ → 1콜 1초**. timeout 발생 = **6~8콜 → 2콜**.
+
 **v2.3 (2026-05-06) — Phase 0 라우팅 게이트 + 병목 4건 제거:**
 1. **Phase 0 신설** — deploy.sh 진입 즉시 `.deploy-cache.json` + `gh api contents` + `curl HEAD` 3중 조회 → `DEPLOY_KIND=redeploy|new` 자동 분기. "기배포 발견 → 재배포" / "신규 → 새 서브폴더" 1줄 보고.
 2. **mapfile 제거** → `grep -c .` 카운트 단순화. macOS bash 3.2 한계 우회.
 3. **검증 단순화** — 파일별 HEAD 루프(N건) → 루트 URL 1회 HEAD. `sleep 60s` 고정. 재시도 루프 ✗.
 4. **`.deploy-cache.json`** — `~/github-repos/skill-repos/github-deploy/.cache/deploy-cache.json`. key=`{mode}:{repo}`. 매 배포 자동 갱신.
-
-→ 결과: 배포 1회 = DC start_process 1콜 = push + 60s + 단일 검증 + 캐시 갱신. 검증 루프·진단 루프·재호출 전부 제거.
 
 **계정·레포 구조 (고정):**
 - OWNER = `jasonnamii`
@@ -254,6 +260,14 @@ v2.0부터 신규 배포 **차단**. 리다이렉트 전용.
 ## Gotchas
 
 - **DC start_process 자동실행이 디폴트** — Claude는 무조건 DC로 deploy.sh를 호출. "1줄 명령 출력 + 형이 수동 실행" 안내는 v2.2부터 폐기. 형이 "dc로 배포"·"자동으로"·"바로 배포" 안 적어도 DC 직행.
+- **timeout ≠ 실패 (v2.4 신설)** — `start_process timeout_ms` 만료 = MCP 응답 timeout일 뿐, deploy.sh는 정상 진행 중일 가능성 높음. 즉시 재시도 ✗. **timeout 발생 시 4단계 검증 순서:**
+  1. `mcp__Desktop_Commander__read_process_output(pid, timeout_ms=60000)` — 추가 출력 수신
+  2. `cat ~/github-repos/skill-repos/github-deploy/.cache/deploy-status.txt` — F2 박제 결과 즉시 파악 (`STATUS=success` 면 완료, `STATUS=phase4-pushed` 면 push까지 끝남)
+  3. `cd /tmp/gh-deploy/{root_repo} && git log -1 --format='%h %s'` — 최근 commit 확인
+  4. `curl -sI {BASE_URL}/ | head -3` — 라이브 last-modified 확인
+  → 4단계 중 하나라도 성공 신호면 **재시도 ✗·결과 보고만**. 모두 실패 신호면 재시도 1회.
+- **F1 sha256 short-circuit (v2.4)** — 동일 입력 파일 재배포 시 deploy.sh가 1초 이내 `DONE-SKIP (sha256 match...)` 출력하고 종료. 콘텐츠 변경 없는데 다시 push할 일 ✗. 출력에 `DONE-SKIP` 보이면 정상.
+- **`.deploy-status.txt` 위치** — `~/github-repos/skill-repos/github-deploy/.cache/deploy-status.txt`. 9필드 (`STATUS·PHASE·MODE·REPO·URL·COMMIT·HTTP_CODE·DEPLOY_KIND·TIME·PID`). timeout 시 첫 의지처.
 - **DC = 형 맥북 zsh** — DC start_process는 형 로컬 셸을 그대로 띄움 → `gh auth`·SSH 키·토큰·홈 경로 전부 사용 가능. "샌드박스 토큰 없음" 전제는 v2.1의 오해, v2.2부터 폐기.
 - **스크립트 표준 경로** — `~/github-repos/skill-repos/github-deploy/scripts/deploy.sh`. `~/.claude/skills/github-deploy/scripts/`는 미설치 → fallback 금지. 경로 의심 시 DC `find ~ -maxdepth 6 -type f -name "deploy.sh" -path "*github-deploy*"` 1콜로 확인.
 - **DC bash 호출 형식** — `command='bash -lc "..."'` 권장 (zsh login 환경 강제로 PATH·gh auth 안정). timeout_ms는 deploy=180000, check=30000, migrate=120000 디폴트.
@@ -307,4 +321,27 @@ DC로 자동 실행 후에도 "수동 실행하려면 ~~~" 같은 백업 안내 
 ✅ **CORRECT (단일 경로):**
 ```
 DC start_process 1콜 → 결과 보고. 끝. 수동 안내 ✗.
+```
+
+❌ **WRONG (v2.4 새 함정 — timeout 후 즉시 재시도):**
+```
+사용자: "배포해줘"
+→ Claude DC start_process 호출
+→ MCP timeout 떠오름
+→ Claude: "실패한 듯. 다시 시도"
+→ 작업폴더 rm -rf + 재시도
+→ "변경 없음" 출력 (실제로는 1차에 이미 push 완료)
+→ Claude 혼란, 5콜+ 폭증
+```
+
+✅ **CORRECT (v2.4 동작 — timeout = 일시 stream 끊김 가능성):**
+```
+사용자: "배포해줘"
+→ Claude DC start_process 호출 (timeout=180s)
+→ MCP timeout 발생
+→ Claude 4단계 검증 순서:
+  ① cat ~/github-repos/skill-repos/github-deploy/.cache/deploy-status.txt
+     → STATUS=success 확인 → 즉시 결과 보고. 끝
+  (또는 ② git log -1 / ③ curl HEAD로도 OK)
+→ 재시도 ✗
 ```
