@@ -19,6 +19,14 @@ description: |
 
 **v2.2 (2026-05-02) — DC 자동실행 전면화:** v2.1의 "샌드박스 직접 push 불가·형이 수동 실행" 정책 폐기. DC start_process는 형 맥북 zsh를 그대로 띄우므로 `gh auth`·SSH·토큰 전부 동작. Claude가 deploy.sh를 **무조건 자동 호출**. 1줄 명령 출력 안내 전면 삭제.
 
+**v2.5 (2026-05-10) — 속도 Top5 적용 (-30~45s/배포·공식 plugin 패턴 회귀):**
+1. **verify_root sleep→polling** — `sleep 60` 고정 → `sleep 20` + `5s × 12회 break`. 200 즉시 종료. 평균 −30~45초/배포.
+2. **Phase 0 라우팅 게이트 병렬화** — `gh api`(tree) + `curl HEAD`(외부) 직렬 → `&` + `wait` 병렬. −3~5초/재배포.
+3. **Python heredoc 5개 → `_helper.py` 단일 모듈** — `cache_read·cache_sha·update_cache·stage_source·inject_noindex` 통합. cold start 5×50ms → 1×50ms. deploy.sh 라인 −121줄 (417→296).
+4. **Gotchas + WRONG/CORRECT 추가** — sleep 고정 vs polling 대조.
+
+→ 결과: 일반 배포 = `120s → 80s` 수렴. 재배포 라우팅 = `8s → 3s`.
+
 **v2.4 (2026-05-09) — F1·F2·F3·F4 병목 제거 (timeout 회피·sha256 short-circuit):**
 1. **F1 sha256 short-circuit** — Phase 0에서 입력 파일 sha256 vs 캐시 `last_sha256` 비교. 동일 콘텐츠면 1초 이내 `DONE-SKIP` 1줄 종료. **재배포 콜 폭증 차단.**
 2. **F2 `.deploy-status.txt`** — 매 phase 종료 시 `STATUS / PHASE / MODE / REPO / URL / COMMIT / HTTP_CODE / TIME / PID` 9필드 박제. 위치: `~/github-repos/skill-repos/github-deploy/.cache/deploy-status.txt`. **timeout 시 Claude가 cat 1콜로 즉시 결과 파악.**
@@ -290,6 +298,8 @@ v2.0부터 신규 배포 **차단**. 리다이렉트 전용.
 - **HEAD 검증 끄기**: `command='bash -lc "SKIP_VERIFY=1 bash .../deploy.sh ..."'`
 - **레거시 DNS 유지**: `works.jasonnamii.com` CNAME 최소 3~6개월 유지.
 - **리다이렉트 적용 전 복제 필수**: `migrate-legacy.sh scan` → 복제 → `apply` 순서 엄수.
+- **`_helper.py` 위치 (v2.5 신설)**: deploy.sh와 같은 디렉토리(`scripts/_helper.py`). deploy.sh가 `SCRIPT_DIR/_helper.py`로 자동 참조. 분리 호출 ✗ (e.g. `python3 _helper.py cache_read ...`는 deploy.sh 내부 호출 전용). 직접 수정 금지 — Python 로직은 _helper.py에 단일 소스.
+- **polling 시작 = sleep 20 (v2.5)**: false-positive 200 회피용. GitHub Pages CDN이 이전 캐시를 200으로 응답할 가능성 차단. 20s는 경험치, 더 줄이면 캐시 hit 위험.
 
 ---
 
@@ -322,6 +332,35 @@ DC로 자동 실행 후에도 "수동 실행하려면 ~~~" 같은 백업 안내 
 ```
 DC start_process 1콜 → 결과 보고. 끝. 수동 안내 ✗.
 ```
+
+❌ **WRONG (v2.5 이전 — 고정 sleep 60s 후 단일 HEAD):**
+```
+배포 후 무조건 sleep 60 → curl HEAD → 200/4xx 1번만 판정
+→ Pages 전파가 30s에 끝나도 30s 낭비
+→ 80s 걸리면 1회 검증 실패 후 형이 수동 재확인
+```
+
+✅ **CORRECT (v2.5 — sleep 20 + polling 12회):**
+```
+sleep 20 (false-positive 캐시 응답 회피) →
+for i in 1..12; sleep 5 + curl HEAD; [200] && break →
+실제 전파 시간만큼만 대기 → 평균 -30~45s
+80s 폴링 후 미전파 시에만 추가 대기 안내
+```
+
+❌ **WRONG (Phase 0 직렬 RTT):**
+```
+gh api tree (5s) → curl HEAD (5s) → 직렬 max 10s
+재배포 라우팅마다 8s+
+```
+
+✅ **CORRECT (Phase 0 병렬 + wait):**
+```
+gh api tree & + curl HEAD & → wait → 결과 합산
+max(5,5)=5s. -3~5s/재배포 라우팅
+```
+
+---
 
 ❌ **WRONG (v2.4 새 함정 — timeout 후 즉시 재시도):**
 ```

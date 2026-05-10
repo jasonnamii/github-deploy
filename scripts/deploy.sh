@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
-# deploy.sh — choi 디폴트 + pdkim 명시 모드 (v2.3)
+# deploy.sh — choi 디폴트 + pdkim 명시 모드 (v2.5)
 # usage:
 #   bash deploy.sh {repo} {src_path}                    # choi 디폴트
 #   bash deploy.sh {repo} {src_path} --mode=pdkim       # pdkim 명시
 #   bash deploy.sh {repo} {src_path} --mode=choi        # 명시도 가능
+#
+# v2.5 변경점 (2026-05-10 — 속도 Top5 적용):
+#   1. verify_root: sleep 60 고정 → HEAD polling (sleep 20 + 5s×12 break)
+#      → 평균 -30~45s/배포. 200 즉시 break, 미전파 시 80s까지 polling.
+#   2. Phase 0 라우팅: gh api + curl HEAD 직렬 → 병렬 (& + wait)
+#      → -3~5s/재배포 라우팅.
 #
 # v2.4 변경점 (2026-05-09 — F1·F2·F3 병목 제거):
 #   1. F1 sha256 비교: Phase 0에서 입력 파일 sha256 vs 캐시 last_sha256 비교
@@ -23,6 +29,9 @@
 #   choi  → jasonnamii/works-choi/{repo}/  → https://works.choi.build/{repo}/
 #   pdkim → jasonnamii/works-pdkim/{repo}/ → https://works.pdkim.com/{repo}/
 set -eu
+
+# v2.5: _helper.py 위치 — deploy.sh와 동일 디렉토리
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 REPO="${1:?repo required}"
 SRC="${2:?src path required}"
@@ -109,28 +118,27 @@ route_phase0() {
 
   # 0-1: 캐시 조회 (없으면 패스, 있으면 우선)
   if [ -f "$CACHE_FILE" ]; then
-    cache_hit=$(python3 - "$CACHE_FILE" "$REPO" "$MODE" <<'PY' 2>/dev/null || true
-import json, sys
-try:
-    cache = json.load(open(sys.argv[1]))
-    key = f"{sys.argv[3]}:{sys.argv[2]}"
-    if key in cache:
-        print(cache[key].get("url", ""))
-except Exception:
-    pass
-PY
-)
+    cache_hit=$(python3 "${SCRIPT_DIR}/_helper.py" cache_read "$CACHE_FILE" "$REPO" "$MODE" 2>/dev/null || true)
   fi
 
-  # 0-2: git ls-tree (레포 내부 폴더 확인)
-  tree_hit=$(gh api "repos/${OWNER}/${ROOT_REPO}/contents/${REPO}" >/dev/null 2>&1 && echo "Y" || echo "")
+  # v2.5: 0-2 + 0-3 병렬화 (gh api + curl HEAD을 백그라운드 동시 실행)
+  # 직렬 5+5=10s → 병렬 max(5,5)=5s. 평균 -3~5s/재배포 라우팅.
+  local p0_tmp
+  p0_tmp=$(mktemp -d)
+  ( gh api "repos/${OWNER}/${ROOT_REPO}/contents/${REPO}" >/dev/null 2>&1 && echo "Y" > "$p0_tmp/tree" || true ) &
+  local p0_pid_tree=$!
+  ( curl -g -s -o /dev/null -w "%{http_code}" --max-time 5 "${BASE_URL}/" 2>/dev/null > "$p0_tmp/code" || echo "000" > "$p0_tmp/code" ) &
+  local p0_pid_head=$!
+  wait $p0_pid_tree $p0_pid_head 2>/dev/null || true
 
-  # 0-3: curl HEAD (외부 검증, 5초 타임아웃)
+  # 결과 수집
+  tree_hit=$(cat "$p0_tmp/tree" 2>/dev/null || echo "")
   local code
-  code=$(curl -g -s -o /dev/null -w "%{http_code}" --max-time 5 "${BASE_URL}/" 2>/dev/null || echo "000")
+  code=$(cat "$p0_tmp/code" 2>/dev/null || echo "000")
   if [ "$code" = "200" ]; then
     head_hit="Y"
   fi
+  rm -rf "$p0_tmp"
 
   # 0-4: 분기 결정
   if [ -n "$cache_hit" ]; then
@@ -157,16 +165,7 @@ PY
     # 0-6: F1 sha256 short-circuit — 동일 콘텐츠면 1초 종료
     if [ -n "$cache_hit" ] && [ -f "$CACHE_FILE" ]; then
       local cached_sha new_sha
-      cached_sha=$(python3 - "$CACHE_FILE" "$REPO" "$MODE" <<'PY' 2>/dev/null || true
-import json, sys
-try:
-    cache = json.load(open(sys.argv[1]))
-    key = f"{sys.argv[3]}:{sys.argv[2]}"
-    print(cache.get(key, {}).get("last_sha256", ""))
-except Exception:
-    pass
-PY
-)
+      cached_sha=$(python3 "${SCRIPT_DIR}/_helper.py" cache_sha "$CACHE_FILE" "$REPO" "$MODE" 2>/dev/null || true)
       new_sha=$(compute_input_sha "$SRC")
       if [ -n "$cached_sha" ] && [ -n "$new_sha" ] && [ "$cached_sha" = "$new_sha" ]; then
         ok "[phase 0] 입력 sha256 동일 → 이미 최신본 배포됨. 재push 생략"
@@ -186,27 +185,7 @@ update_cache() {
   mkdir -p "$CACHE_DIR"
   local input_sha
   input_sha=$(compute_input_sha "$SRC")
-  python3 - "$CACHE_FILE" "$REPO" "$MODE" "$BASE_URL" "$DEPLOY_KIND" "$input_sha" <<'PY' 2>/dev/null || true
-import json, os, sys
-from datetime import datetime, timezone
-path, repo, mode, url, kind, sha = sys.argv[1:7]
-cache = {}
-if os.path.exists(path):
-    try:
-        cache = json.load(open(path))
-    except Exception:
-        cache = {}
-key = f"{mode}:{repo}"
-cache[key] = {
-    "slug": repo,
-    "mode": mode,
-    "url": f"{url}/",
-    "last_kind": kind,
-    "last_sha256": sha,
-    "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-}
-json.dump(cache, open(path, "w"), indent=2, ensure_ascii=False)
-PY
+  python3 "${SCRIPT_DIR}/_helper.py" update_cache "$CACHE_FILE" "$REPO" "$MODE" "$BASE_URL" "$DEPLOY_KIND" "$input_sha" 2>/dev/null || true
 }
 
 say "[mode] ${MODE} → ${OWNER}/${ROOT_REPO}/${REPO}/"
@@ -220,101 +199,7 @@ route_phase0
 # ---------------------------------------------------------------
 stage_source() {
   local src="$1" dst="$2"
-  python3 - "$src" "$dst" <<'PY'
-import sys, os, shutil, re, html
-from urllib.parse import urlparse, unquote
-
-src, dst = sys.argv[1], sys.argv[2]
-os.makedirs(dst, exist_ok=True)
-
-def is_external(ref: str) -> bool:
-    if not ref: return True
-    if ref.startswith(('#', 'javascript:', 'mailto:', 'tel:', 'data:')): return True
-    if ref.startswith(('http://', 'https://', '//')): return True
-    return False
-
-if os.path.isdir(src):
-    shutil.copytree(src, dst, dirs_exist_ok=True)
-    for root, _, files in os.walk(dst):
-        for f in files:
-            rel = os.path.relpath(os.path.join(root, f), dst)
-            print(rel)
-    sys.exit(0)
-
-if not os.path.isfile(src):
-    print(f"ERROR: src not found: {src}", file=sys.stderr)
-    sys.exit(10)
-
-is_html = src.lower().endswith(('.html', '.htm'))
-if is_html:
-    dst_file = os.path.join(dst, 'index.html')
-else:
-    dst_file = os.path.join(dst, os.path.basename(src))
-shutil.copy2(src, dst_file)
-print(os.path.relpath(dst_file, dst))
-
-if not is_html:
-    sys.exit(0)
-
-src_dir = os.path.dirname(os.path.abspath(src))
-with open(dst_file, encoding='utf-8', errors='replace') as f:
-    text = f.read()
-
-patterns = [
-    re.compile(r'''\b(?:src|href)\s*=\s*["']([^"']+)["']''', re.I),
-    re.compile(r'''\bsrcset\s*=\s*["']([^"']+)["']''', re.I),
-    re.compile(r'''\bposter\s*=\s*["']([^"']+)["']''', re.I),
-    re.compile(r'''\bdata-src\s*=\s*["']([^"']+)["']''', re.I),
-]
-
-refs = set()
-for pat in patterns:
-    for m in pat.finditer(text):
-        val = html.unescape(m.group(1))
-        for piece in val.split(','):
-            url = piece.strip().split()[0] if piece.strip() else ''
-            if not url or is_external(url):
-                continue
-            clean = urlparse(url)
-            path = unquote(clean.path)
-            if not path:
-                continue
-            refs.add(path)
-
-copied = []
-missing = []
-for ref in sorted(refs):
-    candidate_rel = ref.lstrip('/')
-    abs_src = os.path.normpath(os.path.join(src_dir, candidate_rel))
-    if not abs_src.startswith(os.path.abspath(src_dir)):
-        print(f"  ! 경로이탈 무시: {ref}", file=sys.stderr)
-        continue
-    if not os.path.exists(abs_src):
-        missing.append(ref)
-        continue
-    abs_dst = os.path.normpath(os.path.join(dst, candidate_rel))
-    os.makedirs(os.path.dirname(abs_dst), exist_ok=True)
-    if os.path.isdir(abs_src):
-        shutil.copytree(abs_src, abs_dst, dirs_exist_ok=True)
-        for root, _, files in os.walk(abs_dst):
-            for f in files:
-                rel = os.path.relpath(os.path.join(root, f), dst)
-                copied.append(rel)
-                print(rel)
-    else:
-        shutil.copy2(abs_src, abs_dst)
-        copied.append(candidate_rel)
-        print(candidate_rel)
-
-print(f"[auto-asset] scanned refs: {len(refs)} | copied: {len(copied)} | missing: {len(missing)}",
-      file=sys.stderr)
-if missing:
-    print("[auto-asset] MISSING (HTML 내 참조되나 파일 없음):", file=sys.stderr)
-    for m in missing[:20]:
-        print(f"  - {m}", file=sys.stderr)
-    if len(missing) > 20:
-        print(f"  ... +{len(missing)-20}개", file=sys.stderr)
-PY
+  python3 "${SCRIPT_DIR}/_helper.py" stage_source "$src" "$dst"
 }
 
 # ---------------------------------------------------------------
@@ -322,16 +207,7 @@ PY
 # ---------------------------------------------------------------
 inject_noindex() {
   local target="$1"
-  python3 - "$target" <<'PY'
-import os, sys
-target = sys.argv[1]
-idx = os.path.join(target, "index.html")
-if os.path.exists(idx):
-    t = open(idx, encoding='utf-8').read()
-    if 'noindex' not in t:
-        t = t.replace('<head>', '<head>\n<meta name="robots" content="noindex, nofollow">', 1)
-        open(idx, 'w', encoding='utf-8').write(t)
-PY
+  python3 "${SCRIPT_DIR}/_helper.py" inject_noindex "$target"
 }
 
 # ---------------------------------------------------------------
@@ -340,19 +216,22 @@ PY
 #   리네임하므로 루트가 곧 페이지). 재시도 루프 제거.
 # ---------------------------------------------------------------
 verify_root() {
+  # v2.5: sleep 60 고정 → HEAD polling (sleep 20 + 5s × 12회 break)
+  # 평균 -30~45s/배포. false-positive 방지 위해 초기 20s 대기 후 polling.
   local base="$1"
-  say "[verify] Pages 전파 대기 60s 후 루트 HEAD 검증"
-  sleep 60
-  local code
-  code=$(curl -g -sI -o /dev/null -w "%{http_code}" --max-time 10 "${base}/" 2>/dev/null || echo "000")
-  if [ "$code" = "200" ]; then
-    ok "[verify] HTTP 200 OK → ${base}/"
-    return 0
-  else
-    warn "[verify] HTTP ${code} → ${base}/ (전파 더 필요할 수 있음)"
-    warn "[verify] 1~2분 후 직접 재확인 권장"
-    return 1
-  fi
+  local code i
+  say "[verify] Pages 전파 초기 20s 대기 후 HEAD polling (5s × 12회)"
+  sleep 20
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    code=$(curl -g -sI -o /dev/null -w "%{http_code}" --max-time 5 "${base}/" 2>/dev/null || echo "000")
+    if [ "$code" = "200" ]; then
+      ok "[verify] HTTP 200 OK → ${base}/ (poll #${i}, 총 $((20 + i*5))s)"
+      return 0
+    fi
+    sleep 5
+  done
+  warn "[verify] HTTP ${code} → ${base}/ (80s 폴링 후 미전파, 추가 1~2분 대기 권장)"
+  return 1
 }
 
 

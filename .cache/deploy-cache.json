@@ -1,0 +1,32 @@
+{
+  "choi:c8-3-0-launching-campaign": {
+    "slug": "c8-3-0-launching-campaign",
+    "mode": "choi",
+    "url": "https://works.choi.build/c8-3-0-launching-campaign/",
+    "last_kind": "new",
+    "timestamp": "2026-05-07T01:25:19.912093Z"
+  },
+  "choi:c8-launching-campaign": {
+    "slug": "c8-launching-campaign",
+    "mode": "choi",
+    "url": "https://works.choi.build/c8-launching-campaign/",
+    "last_kind": "redeploy",
+    "timestamp": "2026-05-07T01:52:41.297668Z"
+  },
+  "choi:kisas-equity-agenda": {
+    "slug": "kisas-equity-agenda",
+    "mode": "choi",
+    "url": "https://works.choi.build/kisas-equity-agenda/",
+    "last_kind": "redeploy",
+    "last_sha256": "9fa89de217f2ff9d2d41eb864ffc517037924793d90d0e0a38f149b932d3b5f4",
+    "timestamp": "2026-05-09T16:58:14.634617Z"
+  },
+  "choi:ai-metacognition-tipping-point": {
+    "slug": "ai-metacognition-tipping-point",
+    "mode": "choi",
+    "url": "https://works.choi.build/ai-metacognition-tipping-point/",
+    "last_kind": "redeploy",
+    "last_sha256": "691e94b23b22b4cadfe6b8858b9530d5c0378dae16191e22bc428155d734bfff",
+    "timestamp": "2026-05-10T04:14:49.217428Z"
+  }
+}
