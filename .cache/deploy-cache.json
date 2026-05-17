@@ -1,0 +1,42 @@
+{
+  "pdkim:k-channel-82-pdk-items-catalogue": {
+    "slug": "k-channel-82-pdk-items-catalogue",
+    "mode": "pdkim",
+    "url": "https://works.pdkim.com/k-channel-82-pdk-items-catalogue/",
+    "last_kind": "redeploy",
+    "last_sha256": "ecd83a119997acbc90be0912c4354b140d17cf482d994cb8209da69304ca65bd",
+    "timestamp": "2026-05-11T04:56:00.553632Z"
+  },
+  "choi:k-channel-82-pdk-catalogue": {
+    "slug": "k-channel-82-pdk-catalogue",
+    "mode": "choi",
+    "url": "https://works.choi.build/k-channel-82-pdk-catalogue/",
+    "last_kind": "new",
+    "last_sha256": "ecd83a119997acbc90be0912c4354b140d17cf482d994cb8209da69304ca65bd",
+    "timestamp": "2026-05-11T04:55:40.295707Z"
+  },
+  "choi:townhall-2026-may": {
+    "slug": "townhall-2026-may",
+    "mode": "choi",
+    "url": "https://works.choi.build/townhall-2026-may/",
+    "last_kind": "redeploy",
+    "last_sha256": "e8deadb5e44cb8dacc01628c1f17ee96b2b8d0f43c0363a4c9c4e1137e42d6a1",
+    "timestamp": "2026-05-12T00:10:10.692559Z"
+  },
+  "choi:kisas-definition": {
+    "slug": "kisas-definition",
+    "mode": "choi",
+    "url": "https://works.choi.build/kisas-definition/",
+    "last_kind": "redeploy",
+    "last_sha256": "a56ae83ecbbf7ac186fd49408da9a77c34c5ee47d373d9d1258d2ca0cdbd1370",
+    "timestamp": "2026-05-12T18:21:47.582795Z"
+  },
+  "pdkim:yl-pdkim-big-vision": {
+    "slug": "yl-pdkim-big-vision",
+    "mode": "pdkim",
+    "url": "https://works.pdkim.com/yl-pdkim-big-vision/",
+    "last_kind": "redeploy",
+    "last_sha256": "d7baff0424a347005bf90e4af2b66066edce5eb5a3d7d74ed6e715bbb51b257b",
+    "timestamp": "2026-05-16T12:41:35.241053Z"
+  }
+}

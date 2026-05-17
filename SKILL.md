@@ -13,6 +13,12 @@ description: |
 
 **깃허브배포·퍼블리싱·웹배포·깃배포** 엔진. 디폴트는 `works.choi.build/{레포명}/`, 명시 호출 시 `works.pdkim.com/{레포명}/`. Private + noindex + HTTPS. **2도메인 체제 (디폴트 1택 + 옵션 1택).**
 
+
+## Skill Boundaries
+
+- **하는 것** — GitHub Pages 자동 배포.
+- **안 하는 것** — 레포관리(→직접), DNS(→직접), jasonnamii.github.io 신규배포(→deprecated·리다이렉트만).
+
 **🚀 실행 환경 (필독):** 모든 bash는 **Claude가 직접 DC `start_process`로 자동 실행**. `~/github-repos/skill-repos/github-deploy/scripts/deploy.sh`는 형 맥북 zsh 환경에서 `gh auth`·SSH 키·토큰을 그대로 사용. **1줄 명령 출력 후 "형이 맥북 터미널에 붙여넣어 실행" 안내 = FAIL**. 자동 실행이 디폴트, 수동 안내는 폐기.
 
 **원칙:** SKILL.md는 분기·규칙만. 실행은 전부 `scripts/*.sh` 호출. LLM이 bash 본문 생성 ✗ → DC start_process로 스크립트 호출만.
@@ -49,6 +55,21 @@ description: |
 - **스크립트 경로 (형 맥북 표준):** `~/github-repos/skill-repos/github-deploy/scripts/`
 
 ---
+
+## When to Use
+
+- 사용자가 "배포해줘", "올려줘", "자동으로 배포", "dc로 배포", "리다이렉트 걸어줘" 같은 표현으로 발동
+- 도메인 작업이 필요한 시점
+- **안 쓸 때** — 레포관리(→직접), DNS(→직접), jasonnamii.github.io 신규배포(→deprecated·리다이렉트만).
+
+
+## Prerequisites
+
+| # | 체크 | 미충족 시 |
+|---|------|-----------|
+| 1 | 대상·입력 명확 (스킬 발동 의도 확인) | 1줄 확인 후 진입 |
+| 3 | scripts/ 실행 권한 | 권한 보정 후 재시도 |
+
 
 ## 🚀 라우팅 (DC 자동실행 직행)
 
@@ -265,7 +286,23 @@ v2.0부터 신규 배포 **차단**. 리다이렉트 전용.
 
 ---
 
-## Gotchas
+## Output Path
+
+| 산출물 | 경로 |
+|---|---|
+| 주 산출물 | `mnt/outputs/github-deploy_{topic}_{YYYY-MM-DD}.md` |
+| 형식 | works.choi.build으로, works.pdkim.com으로. |
+| 리서치 결과 (해당 시) | `{VAULT}/_skills research/github-deploy/{YYYY-MM-DD}_{topic}.md` |
+
+## Next Phase
+
+본 스킬 작업 후 자연스럽게 이어지는 흐름:
+
+- 후속 작업 → `직접`
+- 후속 작업 → `직접`
+- 후속 작업 → `deprecated`
+
+## Failure Modes (Gotchas)
 
 - **DC start_process 자동실행이 디폴트** — Claude는 무조건 DC로 deploy.sh를 호출. "1줄 명령 출력 + 형이 수동 실행" 안내는 v2.2부터 폐기. 형이 "dc로 배포"·"자동으로"·"바로 배포" 안 적어도 DC 직행.
 - **timeout ≠ 실패 (v2.4 신설)** — `start_process timeout_ms` 만료 = MCP 응답 timeout일 뿐, deploy.sh는 정상 진행 중일 가능성 높음. 즉시 재시도 ✗. **timeout 발생 시 4단계 검증 순서:**
